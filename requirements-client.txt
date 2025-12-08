@@ -1,0 +1,10 @@
+rich
+keyboard
+pyclip
+numpy
+sounddevice
+websockets
+pypinyin
+watchdog
+typer
+srt

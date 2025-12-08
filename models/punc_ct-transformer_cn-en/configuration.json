@@ -1,0 +1,20 @@
+{
+    "framework": "pytorch",
+    "task": "punctuation",
+    "model": {
+        "type": "generic-punc",
+        "punc_model_name": "punc.pb",
+        "punc_model_config": {
+            "type": "pytorch",
+            "code_base": "funasr",
+            "mode": "punc",
+            "lang": "zh-cn",
+            "batch_size": 1,
+            "punc_config": "punc.yaml",
+            "model": "punc_ct-transformer_cn-en-common-vocab471067-large-onnx"
+        }
+    },
+    "pipeline": {
+        "type": "punc-inference"
+    }
+}
