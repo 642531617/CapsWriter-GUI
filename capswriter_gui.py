@@ -2,24 +2,93 @@ import sys
 import os
 import subprocess
 import re
+# 【新增】winreg 用于检测系统深色模式
+import winreg
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QTextEdit, QLabel,
                                QTabWidget, QSplitter, QGroupBox, QPlainTextEdit,
                                QMessageBox, QListWidget, QFileDialog, QAbstractItemView)
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QSettings
 from PySide6.QtGui import QFont, QTextCursor, QIcon
+
+# ===========================
+# 样式表定义 (Stylesheets)
+# ===========================
+LIGHT_STYLE = """
+    /* 全局设定 */
+    QWidget { color: #333333; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+    QMainWindow { background-color: #f0f2f5; }
+
+    /* 分组框 */
+    QGroupBox { font-weight: bold; border: 1px solid #dcdcdc; border-radius: 6px; margin-top: 10px; background-color: white; }
+    QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #333333; }
+
+    /* 输入框与列表 */
+    QTextEdit, QPlainTextEdit, QListWidget { border: 1px solid #ccc; border-radius: 4px; background-color: #fafafa; color: #333333; font-size: 10pt; }
+
+    /* 按钮 */
+    QPushButton { background-color: #0078d4; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; border: none; }
+    QPushButton:hover { background-color: #106ebe; }
+    QPushButton:pressed { background-color: #005a9e; }
+    QPushButton:disabled { background-color: #ccc; color: #666666; }
+    QPushButton#stop_btn, QPushButton#clear_btn { background-color: #d13438; }
+    QPushButton#stop_btn:hover, QPushButton#clear_btn:hover { background-color: #a4262c; }
+
+    /* 标签页 */
+    QTabWidget::pane { border: 1px solid #ccc; background: white; }
+    QTabBar::tab { background: #e1e1e1; color: #333; padding: 8px 20px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+    QTabBar::tab:selected { background: white; border-bottom: 2px solid #0078d4; font-weight: bold; }
+"""
+
+DARK_STYLE = """
+    /* 全局设定 - 深色 */
+    QWidget { color: #e0e0e0; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+    QMainWindow { background-color: #1e1e1e; }
+
+    /* 分组框 - 深色 */
+    QGroupBox { font-weight: bold; border: 1px solid #3e3e3e; border-radius: 6px; margin-top: 10px; background-color: #252526; }
+    QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #e0e0e0; background-color: #252526; }
+
+    /* 输入框与列表 - 深色 */
+    QTextEdit, QPlainTextEdit, QListWidget { border: 1px solid #3e3e3e; border-radius: 4px; background-color: #2d2d2d; color: #e0e0e0; font-size: 10pt; }
+
+    /* 按钮 - 保持蓝色但稍暗 */
+    QPushButton { background-color: #0063b1; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; border: none; }
+    QPushButton:hover { background-color: #1975c5; }
+    QPushButton:pressed { background-color: #005a9e; }
+    QPushButton:disabled { background-color: #3e3e3e; color: #777777; }
+    QPushButton#stop_btn, QPushButton#clear_btn { background-color: #c52b2f; }
+    QPushButton#stop_btn:hover, QPushButton#clear_btn:hover { background-color: #d6383c; }
+
+    /* 标签页 - 深色 */
+    QTabWidget::pane { border: 1px solid #3e3e3e; background: #252526; }
+    QTabBar::tab { background: #2d2d2d; color: #bbbbbb; padding: 8px 20px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+    QTabBar::tab:selected { background: #252526; border-bottom: 2px solid #0078d4; color: white; font-weight: bold; }
+"""
 
 
 # ===========================
-# 辅助函数：去除 ANSI 颜色代码
+# 辅助函数
 # ===========================
 def clean_ansi_codes(text):
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     return ansi_escape.sub('', text)
 
 
+def is_system_dark():
+    """检测系统是否为深色模式"""
+    try:
+        registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+        key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        # AppsUseLightTheme: 0 = Dark, 1 = Light
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return value == 0
+    except Exception:
+        return False  # 默认浅色
+
+
 # ===========================
-# 自定义组件：支持拖拽的文件列表
+# 自定义组件
 # ===========================
 class DragDropListWidget(QListWidget):
     def __init__(self, parent=None):
@@ -49,7 +118,7 @@ class DragDropListWidget(QListWidget):
 
 
 # ===========================
-# 长驻进程工作线程 (用于 Server 和 Mic Client)
+# 线程类
 # ===========================
 class ProcessWorker(QThread):
     log_signal = Signal(str)
@@ -67,7 +136,6 @@ class ProcessWorker(QThread):
         startupinfo.wShowWindow = subprocess.SW_HIDE
 
         try:
-            # 确定基准目录
             if getattr(sys, 'frozen', False):
                 base_dir = os.path.dirname(sys.executable)
                 exe_name = self.script_name.replace('.py', '.exe')
@@ -119,7 +187,6 @@ class ProcessWorker(QThread):
         self.is_running = False
         if self.process:
             self.log_signal.emit(f"正在终止进程 PID: {self.process.pid}...")
-            # 【核心修复】使用 taskkill /F /T 强制杀死进程树
             if sys.platform == 'win32':
                 try:
                     subprocess.run(f"taskkill /F /T /PID {self.process.pid}",
@@ -128,8 +195,6 @@ class ProcessWorker(QThread):
                                    stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
-
-            # 兜底调用 terminate
             try:
                 self.process.terminate()
                 self.process.wait(timeout=1)
@@ -137,9 +202,6 @@ class ProcessWorker(QThread):
                 pass
 
 
-# ===========================
-# 任务型工作线程 (用于文件转录)
-# ===========================
 class TaskWorker(QThread):
     log_signal = Signal(str)
     finished_signal = Signal()
@@ -148,7 +210,7 @@ class TaskWorker(QThread):
         super().__init__()
         self.script_name = script_name
         self.args = args
-        self.process = None  # 【修改】改为类属性以便停止
+        self.process = None
 
     def run(self):
         startupinfo = subprocess.STARTUPINFO()
@@ -176,9 +238,7 @@ class TaskWorker(QThread):
             )
 
             while True:
-                # 【修改】增加对 process 是否存在的检查
                 if not self.process: break
-
                 raw_line = self.process.stdout.readline()
                 if not raw_line and self.process.poll() is not None:
                     break
@@ -199,7 +259,6 @@ class TaskWorker(QThread):
         finally:
             self.finished_signal.emit()
 
-    # 【修改】增加 stop 方法
     def stop(self):
         if self.process:
             if sys.platform == 'win32':
@@ -225,27 +284,29 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("CapsWriter Offline - 控制台")
         self.resize(1000, 750)
 
+        # 设置图标
         icon_path = os.path.join("assets", "icon.ico")
         if not os.path.exists(icon_path):
             icon_path = "icon.ico"
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        self.setStyleSheet("""
-            QMainWindow { background-color: #f0f2f5; }
-            QGroupBox { font-weight: bold; border: 1px solid #dcdcdc; border-radius: 6px; margin-top: 10px; background: white; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #333; }
-            QTextEdit, QPlainTextEdit, QListWidget { border: 1px solid #ccc; border-radius: 4px; background-color: #fafafa; font-family: "Consolas", "Microsoft YaHei"; font-size: 10pt; }
-            QPushButton { background-color: #0078d4; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; }
-            QPushButton:hover { background-color: #106ebe; }
-            QPushButton:pressed { background-color: #005a9e; }
-            QPushButton:disabled { background-color: #ccc; }
-            QPushButton#stop_btn, QPushButton#clear_btn { background-color: #d13438; }
-            QPushButton#stop_btn:hover, QPushButton#clear_btn:hover { background-color: #a4262c; }
-            QTabWidget::pane { border: 1px solid #ccc; background: white; }
-            QTabBar::tab { background: #e1e1e1; padding: 8px 20px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            QTabBar::tab:selected { background: white; border-bottom: 2px solid #0078d4; }
-        """)
+        # 【新增】QSettings 用于保存深色模式偏好
+        self.settings = QSettings("HaujetZhao", "CapsWriterOffline")
+
+        # 【新增】主题初始化逻辑
+        # 1. 尝试读取用户手动设置 ('true'/'false')
+        saved_theme = self.settings.value("dark_mode", None)
+
+        if saved_theme is not None:
+            # 如果有存档，遵循存档
+            self.is_dark_mode = (saved_theme == 'true')
+        else:
+            # 如果没存档，自动检测系统
+            self.is_dark_mode = is_system_dark()
+
+        # 应用初始主题
+        self.apply_theme(self.is_dark_mode)
 
         self.server_thread = None
         self.client_thread = None
@@ -262,6 +323,24 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
 
+    # 【新增】应用主题函数
+    def apply_theme(self, is_dark):
+        self.is_dark_mode = is_dark
+        if is_dark:
+            self.setStyleSheet(DARK_STYLE)
+        else:
+            self.setStyleSheet(LIGHT_STYLE)
+
+        # 保存设置
+        self.settings.setValue("dark_mode", 'true' if is_dark else 'false')
+
+    # 【新增】切换主题槽函数
+    def toggle_theme(self):
+        self.apply_theme(not self.is_dark_mode)
+        # 更新按钮文字 (如果在 Config 页面)
+        if hasattr(self, 'btn_theme'):
+            self.btn_theme.setText(f"🌗 切换深色/浅色模式 (当前: {'深色' if self.is_dark_mode else '浅色'})")
+
     def init_ui(self):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -276,7 +355,9 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
 
         self.status_label = QLabel("状态: 未运行")
-        self.status_label.setStyleSheet("color: #666; font-weight: bold; margin-left: 15px;")
+        # 状态标签颜色也需要适配深色模式，简单处理为使用 Theme 定义的颜色即可，但这里手动设了颜色
+        # 我们让它稍微亮一点以适应深色背景
+        self.status_label.setStyleSheet("font-weight: bold; margin-left: 15px;")
 
         control_layout.addWidget(self.btn_start)
         control_layout.addWidget(self.btn_stop)
@@ -340,7 +421,8 @@ class MainWindow(QMainWindow):
         btn_clear.setObjectName("clear_btn")
         btn_clear.clicked.connect(self.file_list.clear)
         self.btn_transcribe = QPushButton("开始转录 (Start Transcribe)")
-        self.btn_transcribe.setStyleSheet("background-color: #107c10;")
+        # 深色模式下，绿色按钮建议稍微暗一点，或者保持高亮
+        self.btn_transcribe.setStyleSheet("background-color: #107c10; color: white;")
         self.btn_transcribe.clicked.connect(self.start_transcription)
 
         btn_layout.addWidget(btn_add)
@@ -389,17 +471,32 @@ class MainWindow(QMainWindow):
 
     def setup_config_tab(self):
         layout = QVBoxLayout(self.config_tab)
+
+        # 【新增】主题切换区域
+        theme_group = QGroupBox("界面外观")
+        theme_layout = QHBoxLayout(theme_group)
+        self.btn_theme = QPushButton(f"🌗 切换深色/浅色模式 (当前: {'深色' if self.is_dark_mode else '浅色'})")
+        self.btn_theme.clicked.connect(self.toggle_theme)
+        theme_layout.addWidget(self.btn_theme)
+        theme_layout.addStretch()
+        layout.addWidget(theme_group)
+
+        # 配置文件区域
+        config_group = QGroupBox("核心配置 (config.py)")
+        config_layout = QVBoxLayout(config_group)
         self.config_editor = QPlainTextEdit()
         self.config_editor.setFont(QFont("Consolas", 10))
         if os.path.exists("config.py"):
             with open("config.py", 'r', encoding='utf-8') as f:
                 self.config_editor.setPlainText(f.read())
-        layout.addWidget(self.config_editor)
+        config_layout.addWidget(self.config_editor)
 
         btn_save_conf = QPushButton("保存配置 (config.py)")
         btn_save_conf.clicked.connect(self.save_config)
-        layout.addWidget(btn_save_conf)
-        layout.addWidget(QLabel("提示: 修改配置需要重启服务才能生效。"))
+        config_layout.addWidget(btn_save_conf)
+        config_layout.addWidget(QLabel("提示: 修改配置需要重启服务才能生效。"))
+
+        layout.addWidget(config_group)
 
     def start_services(self):
         if getattr(sys, 'frozen', False):
@@ -440,13 +537,17 @@ class MainWindow(QMainWindow):
 
     def on_server_status_change(self, is_running):
         self.server_running = is_running
+        # 更新状态标签颜色，需区分深浅模式吗？不用，绿色和灰色在深色模式下也看得清
+        if is_running:
+            self.status_label.setText("状态: 正在运行")
+            self.status_label.setStyleSheet("color: #00cc00; font-weight: bold; margin-left: 15px;")
+        else:
+            self.status_label.setText("状态: 已停止")
+            self.status_label.setStyleSheet("color: #999999; font-weight: bold; margin-left: 15px;")
 
     def update_ui_state(self, running):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
-        self.status_label.setText("状态: 正在运行" if running else "状态: 已停止")
-        self.status_label.setStyleSheet(
-            f"color: {'#00cc00' if running else '#666'}; font-weight: bold; margin-left: 15px;")
 
     def add_files_dialog(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -530,9 +631,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"保存失败: {str(e)}")
 
     def closeEvent(self, event):
-        # 停止所有服务
         self.stop_services()
-        # 停止正在进行的转录任务
         if self.transcribe_thread:
             self.transcribe_thread.stop()
         event.accept()
